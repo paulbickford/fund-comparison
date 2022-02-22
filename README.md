@@ -7,6 +7,8 @@ An Elixir Livebook example that:
 - Calculates their growth over different periods
 - Graphs their price history
 
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fpaulbickford%2Ffund-comparison%2Fblob%2Fmain%2Fstock_analysis.livemd)
+
 ## Note
 
 This project relies on the current layout of Yahoo's webpages.
