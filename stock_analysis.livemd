@@ -1,0 +1,309 @@
+# Mutual fund analysis
+
+## Description
+
+Takes a list of mutual fund symbols, downloads their data from Yahoo, calculates their basic growth, and graphs their price history.
+
+## Setup
+
+```elixir
+Mix.install([
+  {:httpoison, "~> 1.8"},
+  {:poison, "~> 5.0"},
+  {:vega_lite, "~> 0.1.3"},
+  {:kino, "~> 0.5.0"}
+])
+```
+
+```elixir
+HTTPoison.start()
+
+input = Kino.Input.textarea("Symbols:")
+```
+
+## Get symbols
+
+```elixir
+symbols =
+  Kino.Input.read(input)
+  |> String.split()
+
+Enum.count(symbols)
+```
+
+Query String Parameters
+yhlVer: 2
+yhlClient: rapid
+yhlS: 2712295
+yhlCT: 2
+yhlBTMS: 1644344225382
+yhlClientVer: 3.53.31
+yhlRnd: DSLDDBYMeSEcOTcG
+yhlCompressed: 3
+
+yhlVer: 2
+yhlClient: rapid
+yhlS: 2712295
+yhlCT: 2
+yhlBTMS: 1644344250534
+yhlClientVer: 3.53.31
+yhlRnd: 6zq4F03umubqvIpy
+yhlCompressed: 3
+
+## Module to get web pages
+
+```elixir
+defmodule Pages do
+  def get_page_yahoo(symbol, date_from, date_to) do
+    url = get_url_yahoo(symbol, date_from, date_to)
+
+    {:ok, response} = HTTPoison.get(url)
+    {:ok, response} = Poison.decode(response.body)
+    response
+  end
+
+  defp convert_date_to_1970(date) do
+    datetime = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+    datetime_base = DateTime.new!(~D[1970-01-01], ~T[00:00:00], "Etc/UTC")
+    DateTime.diff(datetime, datetime_base)
+  end
+
+  defp get_url_yahoo(symbol, date_from, date_to) do
+    date_from_1970 = convert_date_to_1970(date_from)
+    date_to_1970 = convert_date_to_1970(date_to)
+    base_url = "https://query1.finance.yahoo.com/v8/finance/chart/"
+
+    "#{base_url}#{symbol}?symbol=#{symbol}&period1=#{date_from_1970}&period2=#{date_to_1970}&useYfid=true&interval=1d&includePrePost=true&events=div%7Csplit%7Cearn&lang=en-US&region=US&crumb=qX.jX1ZAWSl&corsDomain=finance.yahoo.com"
+  end
+end
+```
+
+## Get web pages
+
+```elixir
+date_to = Date.utc_today()
+date_from = Date.add(date_to, 5 * -365 - 10)
+
+symbol_pages =
+  for symbol <- symbols, into: %{} do
+    {symbol, %{page: Pages.get_page_yahoo(symbol, date_from, date_to)}}
+  end
+```
+
+## Module of stock functions
+
+### Response structure:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  %{
+    "chart" => %{
+      "error" => nil,
+      "result" => [
+        %{
+          "events" => %{
+            "dividends" => %{
+              "date_seconds_from_1970" => %{"amount" => 0.123, "date" => date_seconds_from_1970}
+            }
+          },
+          "indicators" => %{
+            "adjclose" => [
+              %{
+                "adjclose" => [10.0123456789012345, ... ]
+              }
+            ],
+            "quote" => [
+              %{
+                "close" => [12.0123456789012345, ...],
+                "high" => [13.0123456789012345, ...],
+                "low" => [9.0123456789012345, ...],
+                "open" => [11.0123456789012345, ...],
+                "volume" => [0, ...]
+              }
+            ]
+          },
+          "meta" => %{
+            "chartPreviousClose" => 11.0123456789012345,
+            "currency" => "USD",
+            "currentTradingPeriod" => %{
+              "post" => %{
+                "end" => date_seconds_from_1970,
+                "gmtoffset" => -18000,
+                "start" => date_seconds_from_1970,
+                "timezone" => "EST"
+              },
+              "pre" => %{
+                "end" => date_seconds_from_1970,
+                "gmtoffset" => -18000,
+                "start" => date_seconds_from_1970,
+                "timezone" => "EST"
+              },
+              "regular" => %{
+                "end" => date_seconds_from_1970,
+                "gmtoffset" => -18000,
+                "start" => date_seconds_from_1970,
+                "timezone" => "EST"
+              }
+            },
+            "dataGranularity" => "1d",
+            "exchangeName" => "NAS",
+            "exchangeTimezoneName" => "America/New_York",
+            "firstTradeDate" => 1499866200,
+            "gmtoffset" => -18000,
+            "instrumentType" => "MUTUALFUND",
+            "priceHint" => 2,
+            "range" => "",
+            "regularMarketPrice" => 30.11,
+            "regularMarketTime" => 1644411958,
+            "symbol" => "SYMBOL",
+            "timezone" => "EST",
+            "validRanges" => ["1mo", "3mo", "6mo", "ytd", "1y", "2y", "5y", "10y", "max"]
+          },
+          "timestamp" => [date_seconds_from_1970, ...]
+        }
+      ]
+    }
+  }
+```
+
+```elixir
+defmodule Stock do
+  alias VegaLite, as: Vl
+
+  def get_prices_yahoo(page) do
+    %{"chart" => %{"result" => [results]}} = page
+    %{"adjclose" => [%{"adjclose" => adjusted_close}]} = results["indicators"]
+
+    results["timestamp"]
+    |> Enum.map(&convert_date_from_1970(&1))
+    |> Enum.zip(adjusted_close)
+    |> Enum.reject(fn {_time, price} -> price == nil end)
+    |> Map.new()
+  end
+
+  def get_graph(prices) do
+    prices = convert_prices(prices)
+
+    Vl.new(height: 150, width: 800)
+    |> Vl.data_from_values(prices)
+    |> Vl.mark(:line)
+    |> Vl.encode_field(:x, "date", type: :temporal)
+    |> Vl.encode_field(:y, "price", type: :quantitative, scale: [zero: false])
+  end
+
+  def growth(prices, years) do
+    {max_date, end_price} = Enum.max_by(prices, fn {date, _price} -> date end, Date)
+    {min_date, _price} = Enum.min_by(prices, fn {date, _price} -> date end, Date)
+
+    approx_start_date = Date.add(max_date, years * -365)
+
+    case Date.compare(min_date, approx_start_date) do
+      :gt ->
+        nil
+
+      :lt ->
+        start_price =
+          prices
+          |> nearest_start_price(approx_start_date)
+
+        (end_price - start_price) / start_price
+    end
+  end
+
+  def round_growth(growth) do
+    if !is_nil(growth) do
+      Float.round(growth * 100, 2)
+    else
+      nil
+    end
+  end
+
+  defp convert_date_from_1970(date_in_seconds) do
+    DateTime.new!(~D[1970-01-01], ~T[00:00:00], "Etc/UTC")
+    |> DateTime.add(date_in_seconds)
+    |> DateTime.to_date()
+  end
+
+  defp convert_prices(prices) do
+    for {date, price} <- prices do
+      %{"date" => Date.to_string(date), "price" => price}
+    end
+  end
+
+  defp nearest_start_price(prices, date) do
+    case Map.fetch(prices, date) do
+      {:ok, price} -> price
+      :error -> nearest_start_price(prices, Date.add(date, 1))
+    end
+  end
+end
+```
+
+## Get prices
+
+```elixir
+symbol_info =
+  for symbol <- symbols, symbol_pages[symbol].page["chart"]["error"] == nil, into: %{} do
+    {symbol, %{prices: Stock.get_prices_yahoo(symbol_pages[symbol].page)}}
+  end
+
+IO.inspect(symbol_info)
+Enum.count(symbol_info)
+```
+
+```elixir
+symbol_dates =
+  for {symbol, %{prices: prices}} <- symbol_info, prices != %{}, %{} do
+    {max_date, end_price_string} = Enum.max_by(prices, fn {date, _price} -> date end, Date)
+    {min_date, start_price_string} = Enum.min_by(prices, fn {date, _price} -> date end, Date)
+
+    dates =
+      %{}
+      |> Map.put(max_date, end_price_string)
+      |> Map.put(min_date, start_price_string)
+
+    {symbol, dates}
+  end
+```
+
+## Calculate performance
+
+```elixir
+symbol_info =
+  for {symbol, %{prices: prices} = info} <- symbol_info, prices != %{}, into: %{} do
+    info =
+      info
+      |> Map.put(:growth_1yr, Stock.growth(prices, 1))
+      |> Map.put(:growth_2yr, Stock.growth(prices, 2))
+      |> Map.put(:growth_3yr, Stock.growth(prices, 3))
+      |> Map.put(:growth_5yr, Stock.growth(prices, 5))
+      |> Map.put(:graph, Stock.get_graph(prices))
+
+    IO.inspect(symbol)
+    IO.inspect(info.growth_1yr)
+    IO.inspect(info.growth_2yr)
+    IO.inspect(info.growth_3yr)
+    IO.inspect(info.growth_5yr)
+
+    {symbol, info}
+  end
+
+Enum.count(symbol_info)
+```
+
+## Display results
+
+```elixir
+symbol_info =
+  Enum.sort_by(symbol_info, fn {_symbol, info} -> Map.fetch!(info, :growth_5yr) end, :desc)
+
+Enum.each(symbol_info, fn {symbol, info} ->
+  IO.puts("#{symbol}\nGrowth (5yr/3yr/2yr/1yr) \
+    #{Stock.round_growth(info.growth_5yr)}% \
+    #{Stock.round_growth(info.growth_3yr)}% \
+    #{Stock.round_growth(info.growth_2yr)}% \
+    #{Stock.round_growth(info.growth_1yr)}%")
+  Kino.render(info.graph)
+end)
+```
